@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, 
 
 from actions import Actions, Reply
 from ai import AI
+from config_schema import CONFIG_VERSION, config_blank, load_config_file, save_config_file
 from local_ai import LocalAI
 from persona import line
 from avatar import Avatar
@@ -100,11 +101,7 @@ DEFAULTS = {
 
 def _config_blank():
     """config.json нет или он пустой (всё стёрли) — такой можно спокойно создать заново."""
-    try:
-        with open(CONFIG_PATH, encoding="utf-8-sig") as f:
-            return not f.read().strip()
-    except FileNotFoundError:
-        return True
+    return config_blank(CONFIG_PATH)
 
 
 def _edit_config(change):
@@ -120,8 +117,8 @@ def _edit_config(change):
         log.exception("config.json с ошибкой, не записываю")
         return "в config.json ошибка. Исправь её или удали файл, он создастся заново."
     change(data)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    data.setdefault("config_version", CONFIG_VERSION)  # файл всегда соответствует текущей схеме
+    save_config_file(CONFIG_PATH, data)
     return None
 
 
@@ -147,33 +144,7 @@ CONFIG_ERROR = ""  # что сказать вслух, если config.json не
 
 def load_config():
     global CONFIG_ERROR
-    CONFIG_ERROR = ""
-    cfg = json.loads(json.dumps(DEFAULTS))
-    if not _config_blank():
-        try:
-            with open(CONFIG_PATH, encoding="utf-8-sig") as f:
-                user = json.load(f)
-            for k, v in user.items():
-                if isinstance(v, dict) and isinstance(cfg.get(k), dict):
-                    for name, value in v.items():  # null — убранная встроенная запись
-                        if value is None:
-                            cfg[k].pop(name, None)
-                        else:
-                            cfg[k][name] = value
-                else:
-                    cfg[k] = v
-        except json.JSONDecodeError as e:
-            log.error("config.json с ошибкой (строка %d, символ %d: %s), использую настройки по умолчанию",
-                      e.lineno, e.colno, e.msg)
-            CONFIG_ERROR = (f"В config.json ошибка в строке {e.lineno}, я его не прочитала и работаю "
-                            "со стандартными настройками. Проверь там кавычки, запятые и двойные слеши в путях.")
-        except Exception:
-            log.exception("config.json не прочитался, использую настройки по умолчанию")
-            CONFIG_ERROR = "Не смогла прочитать config.json, работаю со стандартными настройками."
-    else:  # файла нет или его содержимое стёрли — создаём заново со стандартными настройками
-        log.info("config.json пустой или удалён, создаю заново")
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULTS, f, ensure_ascii=False, indent=2)
+    cfg, CONFIG_ERROR = load_config_file(CONFIG_PATH, DEFAULTS)
     return cfg
 
 
