@@ -1,7 +1,6 @@
 """Капри — голосовой ассистент для Windows.
 Запуск: run.bat (или pythonw main.py)."""
 import json
-import logging
 import os
 import queue
 import random
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, 
 from actions import Actions, Reply
 from ai import AI
 from config_schema import CONFIG_VERSION, config_blank, load_config_file, save_config_file
+from logging_setup import setup_logging
 from local_ai import LocalAI
 from persona import line
 from avatar import Avatar
@@ -29,9 +29,7 @@ from voice import (Listener, Speaker, default_input_name, google_stt, input_devi
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 
-logging.basicConfig(filename=os.path.join(BASE, "capri.log"), level=logging.INFO, encoding="utf-8",
-                    format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("capri")
+log = setup_logging(BASE)
 log.info("Python %s", sys.version.split()[0])
 
 DEFAULTS = {
@@ -218,14 +216,16 @@ class Capri(QObject):
         threading.Thread(target=self._worker, daemon=True).start()
         if self.local:
             threading.Thread(target=self.local.start_server, daemon=True).start()
-        model =os.path.join(BASE, self.cfg["vosk_model"])
+        model = os.path.join(BASE, self.cfg["vosk_model"])
         if os.path.isdir(model):
+            log.info("Модель распознавания: %s", model)
             self.listener = Listener(model, self.on_final, self.on_partial, self.on_listener_error,
                                      device_name=self.cfg.get("mic_device") or None,
                                      gain=float(self.cfg.get("mic_gain", 1.0)),
                                      sensitivity=int(self.cfg.get("mic_sensitivity", 100)))
             self.listener.start()
         else:
+            log.error("Модель распознавания не найдена: %s", model)
             self.jobs.put(("say", line("no_model")))
             return
         # вступление: анимация capri + приветствие
@@ -483,7 +483,10 @@ class Capri(QObject):
                 self._process(job)
             except Exception:
                 log.exception("Ошибка обработки %s", job[0])
-                self.say(line("crash"))
+                try:
+                    self.say(line("crash"))
+                except Exception:
+                    log.exception("Не удалось озвучить сообщение об ошибке")
 
     def _process(self, job):
         kind = job[0]
@@ -517,7 +520,8 @@ class Capri(QObject):
                 better = google_stt(audio)
                 if better:
                     better = better.lower()
-                    if len(better) >= 2:
+                    if len(better) >= 2 and better != cmd:
+                        log.info("Google STT уточнил: %s", better)
                         cmd = better
         else:
             cmd = job[1]
@@ -531,20 +535,41 @@ class Capri(QObject):
                 self.subtitle.emit(line("listen"))
                 return
             cmd = stripped
-        log.info("Команда: %s", cmd)
+        log.info("Услышал: %s", cmd)
         self.mode.emit("thinking", 0.0)
         self.subtitle.emit("> " + cmd)
         self.reload_config_if_changed()
 
-        reply = self.actions.handle(cmd)
+        reply, source = None, "command"
+        try:
+            reply = self.actions.handle(cmd)
+        except Exception as e:
+            log.exception("Ошибка выполнения команды: %s", cmd)
+            reply = Reply(line("error", e=e))
         if reply is not None and reply.action in ("mic_info", "mic_next"):
             reply = self.mic_command(reply.action)
         if reply is None:
             if self.cfg.get("enable_ai") and self.ai.available:
-                reply = Reply(self.ai.ask(cmd), "answer")
-            else:
-                answer = self.local.ask(cmd) if self.local else None
-                reply = Reply(answer, "answer") if answer else self.actions.fallback(cmd, force_search=bool(self.local))
+                source = "claude"
+                try:
+                    reply = Reply(self.ai.ask(cmd), "answer")
+                except Exception:
+                    log.exception("Облачный ИИ не ответил")
+                    reply = None
+            if reply is None:
+                answer = None
+                if self.local:
+                    source = "local"
+                    try:
+                        answer = self.local.ask(cmd)
+                    except Exception:
+                        log.exception("Локальный ИИ не ответил")
+                if answer:
+                    reply = Reply(answer, "answer")
+                else:
+                    source = "fallback"
+                    reply = self.actions.fallback(cmd, force_search=bool(self.local))
+        log.info("Интент: %s; источник ответа: %s", self.actions.last_intent or "none", source)
         if reply.action == "answer" and self.cfg.get("teleport_on_answer"):
             self.hop.emit()  # отвечает, скача по экрану красной молнией
         if reply.action == "wave":
