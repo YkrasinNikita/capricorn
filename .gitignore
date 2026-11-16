@@ -6,6 +6,9 @@ config.json.bak
 reminders.json
 reminders.json.bak
 reminders.json.tmp
+notes.json
+notes.json.bak
+notes.json.tmp
 
 # скачиваемая модель распознавания речи — ставится через setup.bat
 models/

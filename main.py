@@ -20,6 +20,7 @@ from ai import AI
 from config_schema import CONFIG_VERSION, config_blank, load_config_file, save_config_file
 from logging_setup import setup_logging
 from local_ai import LocalAI
+from notes import Notes
 from persona import line
 from scheduler import Scheduler
 from avatar import Avatar
@@ -199,7 +200,9 @@ class Capri(QObject):
         self.speaker = Speaker(cfg)
         self.jobs = queue.Queue()
         self.scheduler = Scheduler(os.path.join(BASE, "reminders.json"), self._on_reminder)
+        self.notes = Notes(os.path.join(BASE, "notes.json"))
         self.actions.scheduler = self.scheduler
+        self.actions.notes = self.notes
         self.awake_until = 0.0
         self.last_partial_wake = 0.0
         self.speaking = False

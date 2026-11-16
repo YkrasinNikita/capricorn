@@ -15,6 +15,7 @@ from .fallback import FallbackMixin
 from .files import FilesMixin
 from .keys import KeysMixin, send_keys
 from .media_cmds import MediaMixin
+from .notes_cmds import NotesMixin
 from .reminders import RemindersMixin
 from .routes import FORGET_RE, FORGET_REPLY_RE, REMEMBER_RE, REPLY_RE, ROUTES
 from .system import SystemMixin
@@ -24,7 +25,7 @@ from .web import (BROWSER_NAMES, BROWSER_SUFFIX, BROWSER_WORDS, WebMixin, cancel
 
 
 class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixin, RemindersMixin,
-              FallbackMixin):
+              NotesMixin, FallbackMixin):
     def __init__(self, cfg, base_dir, ai, save=None, build_index=True):
         self.cfg = cfg
         self.base_dir = base_dir

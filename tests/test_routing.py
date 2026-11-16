@@ -64,6 +64,11 @@ CASES = [
     ("напомни в 18:30 о встрече", "reminder_add"),
     ("какие напоминания", "reminder_list"),
     ("отмени напоминание", "reminder_cancel"),
+    # заметки
+    ("запомни что кот спит на клавиатуре", "note_add"),
+    ("что ты знаешь о встрече", "note_search"),
+    ("покажи заметки", "note_list"),
+    ("удали заметку про кота", "note_delete"),
     # время
     ("который час", "time"),
     ("какая сегодня дата", "date"),
@@ -83,7 +88,7 @@ def test_registry_names_and_order():
     """Все имена уникальны, обработчики описаны строками или callable, реестр не пустой."""
     names = [name for name, _, _ in ROUTES]
     assert len(names) == len(set(names))
-    assert len(ROUTES) == 51
+    assert len(ROUTES) == 55
     for name, pattern, handler in ROUTES:
         assert isinstance(name, str) and name
         assert pattern
