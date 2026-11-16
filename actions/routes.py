@@ -28,6 +28,12 @@ ROUTES = [
     ("forget_site", FORGET_RE, "forget_cmd"),
     ("reply_set", REPLY_RE, "reply_cmd"),
     ("reply_forget", FORGET_REPLY_RE, "forget_reply_cmd"),
+    # --- напоминания ---
+    ("reminder_cancel", r"^(отмени|удали|убери|сними|забудь)\s+(все\s+)?напоминани\w*(?:\s+(?P<q>.+))?$",
+     "reminder_cancel"),
+    ("reminder_list", r"^(какие|мои|покажи|список)\s+(у меня\s+)?напоминани|^что\s+(мне\s+)?напомнить",
+     "reminder_list"),
+    ("reminder_add", r"^напомни(\s+мне)?\b", "reminder_add"),
     ("wave", r"помаши|помахай|махни|помаши ручкой|поздоровайся", "wave"),
     ("roam", r"погуляй|прогуляйся|пройдись|прогулк", "roam"),
     ("help", r"что ты (умеешь|можешь)|как\w* (у тебя )?команд|(назови|перечисли|скажи) (\S+ )?команд|"

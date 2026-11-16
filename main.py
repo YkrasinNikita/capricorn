@@ -21,6 +21,7 @@ from config_schema import CONFIG_VERSION, config_blank, load_config_file, save_c
 from logging_setup import setup_logging
 from local_ai import LocalAI
 from persona import line
+from scheduler import Scheduler
 from avatar import Avatar
 import zapret
 from voice import (Listener, Speaker, default_input_name, google_stt, input_devices, make_glitch_sound,
@@ -197,6 +198,8 @@ class Capri(QObject):
         self.actions.local = self.local
         self.speaker = Speaker(cfg)
         self.jobs = queue.Queue()
+        self.scheduler = Scheduler(os.path.join(BASE, "reminders.json"), self._on_reminder)
+        self.actions.scheduler = self.scheduler
         self.awake_until = 0.0
         self.last_partial_wake = 0.0
         self.speaking = False
@@ -214,6 +217,7 @@ class Capri(QObject):
 
     def start(self):
         threading.Thread(target=self._worker, daemon=True).start()
+        self.scheduler.start()  # просроченные озвучатся один раз при старте
         if self.local:
             threading.Thread(target=self.local.start_server, daemon=True).start()
         model = os.path.join(BASE, self.cfg["vosk_model"])
@@ -355,6 +359,17 @@ class Capri(QObject):
 
     def on_listener_error(self, err, kind="mic"):
         self.jobs.put(("say", line("model_broken" if kind == "model" else "no_mic")))
+
+    def _on_reminder(self, text):
+        """Планировщик сработал — озвучиваем в рабочем потоке, а не в его собственном."""
+        self.jobs.put(("say", line("reminder_due", t=text)))
+
+    def shutdown(self):
+        """Корректно останавливаем фоновые потоки при выходе."""
+        try:
+            self.scheduler.stop()
+        except Exception:
+            log.exception("Не удалось остановить планировщик напоминаний")
 
     def set_chatter(self, on):
         """Галочка в трее: появляется ли Капри сама (поболтать, погулять по экрану). Сразу и запоминается."""
@@ -678,6 +693,7 @@ def main():
     capri.hop.connect(avatar.start_hopping)
     capri.move_to.connect(avatar.move_to_named)
     avatar.clicked.connect(capri.call_from_click)
+    app.aboutToQuit.connect(capri.shutdown)
 
     def ask_text():
         text, ok = QInputDialog.getText(None, "Капри", "Команда или вопрос:")

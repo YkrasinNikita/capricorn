@@ -15,6 +15,7 @@ from .fallback import FallbackMixin
 from .files import FilesMixin
 from .keys import KeysMixin, send_keys
 from .media_cmds import MediaMixin
+from .reminders import RemindersMixin
 from .routes import FORGET_RE, FORGET_REPLY_RE, REMEMBER_RE, REPLY_RE, ROUTES
 from .system import SystemMixin
 from .utils import Reply, log, norm, translit
@@ -22,7 +23,8 @@ from .web import (BROWSER_NAMES, BROWSER_SUFFIX, BROWSER_WORDS, WebMixin, cancel
                   youtube_search_in_tab)
 
 
-class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixin, FallbackMixin):
+class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixin, RemindersMixin,
+              FallbackMixin):
     def __init__(self, cfg, base_dir, ai, save=None, build_index=True):
         self.cfg = cfg
         self.base_dir = base_dir
@@ -38,6 +40,8 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
         self.youtube_opened_at = 0.0  # когда Капри последний раз открывала YouTube
         self.media_paused = None      # какой плеер Капри поставила на паузу
         self.local = None
+        self.notes = None             # заметки и память (notes.py), подключает main
+        self.scheduler = None         # напоминания (scheduler.py), подключает main
         self.last_intent = None       # имя сработавшего интента — для логов и тестов
         self.routes = ROUTES
 

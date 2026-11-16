@@ -59,6 +59,11 @@ CASES = [
     ("забудь сайт музыка", "forget_site"),
     ("когда я скажу как дела отвечай лучше всех", "reply_set"),
     ("забудь ответ на как дела", "reply_forget"),
+    # напоминания
+    ("напомни через 10 минут позвонить маме", "reminder_add"),
+    ("напомни в 18:30 о встрече", "reminder_add"),
+    ("какие напоминания", "reminder_list"),
+    ("отмени напоминание", "reminder_cancel"),
     # время
     ("который час", "time"),
     ("какая сегодня дата", "date"),
@@ -78,7 +83,7 @@ def test_registry_names_and_order():
     """Все имена уникальны, обработчики описаны строками или callable, реестр не пустой."""
     names = [name for name, _, _ in ROUTES]
     assert len(names) == len(set(names))
-    assert len(ROUTES) == 48
+    assert len(ROUTES) == 51
     for name, pattern, handler in ROUTES:
         assert isinstance(name, str) and name
         assert pattern
@@ -92,7 +97,7 @@ def test_more_specific_route_wins():
 
 
 def test_unknown_phrase_has_no_intent():
-    assert match_route("напомни позвонить маме") is None
+    assert match_route("нарисуй мне кота") is None
 
 
 def test_actions_registry_is_wired(actions):
