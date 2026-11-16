@@ -9,7 +9,7 @@ class FakeLocal:
         self.calls = []
         self.last_error = None
 
-    def ask(self, text, timeout=None):
+    def ask(self, text, timeout=None, retries=1):
         self.calls.append(timeout)
         if self.error:
             self.last_error = "Ollama недоступна"

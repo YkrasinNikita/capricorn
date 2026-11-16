@@ -29,9 +29,14 @@ class AIRouter:
         for attempt in range(RETRIES + 1):
             try:
                 try:
-                    answer = self.local.ask(text, timeout=LOCAL_TIMEOUT)
-                except TypeError:  # совместимость с LocalAI без параметра timeout
-                    return self.local.ask(text)
+                    # повторы делает сам роутер: внутри LocalAI они не нужны, иначе
+                    # один и тот же запрос уйдёт четыре раза
+                    answer = self.local.ask(text, timeout=LOCAL_TIMEOUT, retries=0)
+                except TypeError:  # совместимость с LocalAI без новых параметров
+                    try:
+                        answer = self.local.ask(text, timeout=LOCAL_TIMEOUT)
+                    except TypeError:
+                        return self.local.ask(text)
             except Exception as e:
                 log.info("Локальный ИИ не ответил (попытка %d): %s", attempt + 1, e)
                 answer = None
