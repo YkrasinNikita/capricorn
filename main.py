@@ -765,14 +765,19 @@ def main():
         capri.reload_config_if_changed(speak=False)
         show_window("entries", lambda: EntriesDialog(capri.actions))
 
-    def open_sound():
-        from sound_dialog import SoundDialog
-        show_window("sound", lambda: SoundDialog(capri))
+    def open_settings(tab="voice"):
+        from settings_dialog import SettingsDialog
+        capri.reload_config_if_changed(speak=False)
+        show_window("settings", lambda: SettingsDialog(capri))
+        dlg = windows.get("settings")
+        if dlg is not None:
+            dlg.open_tab(tab)
 
     menu = QMenu()
     for title, fn in (("Позвать Капри", capri.call_from_click),
                       ("Замолчать", capri.interrupt),
                       ("Написать команду…", ask_text),
+                      ("Настройки…", open_settings),
                       ("Мои сайты, программы и ответы…", open_entries),
                       ("Проверить ПК", lambda: capri.text_command("проверь компьютер")),
                       ("Спрятать", avatar.vanish),
@@ -804,7 +809,7 @@ def main():
                     m.addAction(a)
                 m.addSeparator()
                 tune = QAction("Громкость и чувствительность…", m)
-                tune.triggered.connect(open_sound)
+                tune.triggered.connect(lambda: open_settings("voice"))
                 m.addAction(tune)
             mic_menu.aboutToShow.connect(fill_mics)
 
