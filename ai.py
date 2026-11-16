@@ -23,18 +23,19 @@ class AI:
         key = cfg.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
         if key:
             import anthropic
-            self.client = anthropic.Anthropic(api_key=key, timeout=60, max_retries=2)
+            self.client = anthropic.Anthropic(api_key=key, timeout=60, max_retries=1)
 
     @property
     def available(self):
         return self.client is not None
 
-    def _call(self, system, messages, tools):
-        """Запрос с серверным фолбэком при отказе и продолжением при pause_turn."""
+    def _call(self, system, messages, tools, timeout=None):
+        """Запрос с серверным фолбэком при отказе и продолжением при pause_turn.
+        timeout — ограничение на один HTTP-запрос (None — как настроено в клиенте)."""
         msgs = list(messages)
         extra = {"tools": tools} if tools else {}
         for _ in range(4):
-            resp = self.client.beta.messages.create(
+            kwargs = dict(
                 model=self.model,
                 max_tokens=2000,
                 system=system,
@@ -44,6 +45,9 @@ class AI:
                 betas=["server-side-fallback-2026-07-01"],
                 extra_body={"fallbacks": "default"},
             )
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            resp = self.client.beta.messages.create(**kwargs)
             if resp.stop_reason == "pause_turn":
                 msgs.append({"role": "assistant", "content": resp.content})
                 continue
@@ -53,7 +57,7 @@ class AI:
             return text or "Хм, пустой ответ. Спроси ещё раз."
         return "Поиск затянулся, попробуй переформулировать."
 
-    def ask(self, question):
+    def ask(self, question, timeout=None):
         if not self.available:
             return ("Чтобы я отвечала на вопросы, впиши ключ Anthropic API в config.json, "
                     "в поле anthropic_api_key.")
@@ -65,7 +69,8 @@ class AI:
             self.history.pop(0)
         try:
             answer = self._call(SYSTEM, self.history,
-                                [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}])
+                                [{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+                                timeout=timeout)
         except anthropic.AuthenticationError:
             self.history.pop()
             return "Ключ API не подходит. Проверь anthropic_api_key в config.json."

@@ -154,6 +154,7 @@ class LocalAI:
     def __init__(self, cfg):
         self.model = cfg.get("local_model", "qwen3:8b")
         self.history = []
+        self.last_error = None       # почему не ответила в последний раз (для повтора в ai_router)
         self.on_model_change = None  # main записывает новую модель в config.json
 
     @staticmethod
@@ -203,7 +204,7 @@ class LocalAI:
         except Exception as e:
             log.info("Не удалось прогреть модель: %s", e)
 
-    def _chat(self, messages, max_tokens=300):
+    def _chat(self, messages, max_tokens=300, timeout=120):
         resp = _post("/api/chat", {
             "model": self.model,
             "messages": messages,
@@ -211,31 +212,45 @@ class LocalAI:
             "think": False,  # Qwen3 по умолчанию «рассуждает» вслух — для голоса это лишняя задержка
             "keep_alive": "10m",
             "options": {"num_predict": max_tokens, "temperature": 0.6, "repeat_penalty": 1.15},
-        }, 120)
+        }, timeout)
         text = strip_reasoning(resp.get("message", {}).get("content", ""))
         if REASONING.search(text):
             # модель всё равно «думает» вслух — переспрашиваем, а если опять, ответа нет
             log.info("Модель %s рассуждает вслух вместо ответа", self.model)
             if messages[-1].get("content", "").startswith(NO_THINKING):
                 return ""
-            return self._chat(messages + [{"role": "system", "content": NO_THINKING}], max_tokens)
+            return self._chat(messages + [{"role": "system", "content": NO_THINKING}], max_tokens, timeout)
         return text
 
-    def ask(self, question):
-        """Текст ответа или None, если лучше открыть поиск."""
+    def ask(self, question, timeout=120, retries=1):
+        """Текст ответа или None, если лучше открыть поиск. timeout — на один запрос к Ollama."""
+        self.last_error = None
         if FRESH.search(question.lower()):
             return None
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         self.history.append({"role": "user", "content": question})
         self.history = self.history[-6:]
         messages = [{"role": "system", "content": SYSTEM + f"\nСейчас {now}."}] + self.history
+        answer = None
         try:
-            answer = self._chat(messages)
+            for attempt in range(max(0, int(retries)) + 1):
+                try:
+                    answer = self._chat(messages, timeout=timeout)
+                    break
+                except Exception as e:
+                    self.last_error = str(e)
+                    log.info("Локальная модель недоступна (попытка %d из %d): %s",
+                             attempt + 1, retries + 1, e)
+            if answer is None:
+                self.history.pop()
+                return None
             if FOREIGN.search(answer):  # Qwen иногда срывается на китайский — пробуем ещё раз
                 answer = self._chat(messages + [{"role": "system", "content":
-                                    "Ответь заново, строго только русскими буквами, без иероглифов."}])
+                                    "Ответь заново, строго только русскими буквами, без иероглифов."}],
+                                    timeout=timeout)
             answer = re.sub(r"\s+", " ", FOREIGN.sub("", answer)).strip()
         except Exception as e:
+            self.last_error = str(e)
             log.info("Локальная модель недоступна: %s", e)
             self.history.pop()
             return None

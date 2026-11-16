@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, 
 
 from actions import Actions, Reply
 from ai import AI
+from ai_router import AIRouter
 from config_schema import CONFIG_VERSION, config_blank, load_config_file, save_config_file
 from logging_setup import setup_logging
 from local_ai import LocalAI
@@ -195,6 +196,7 @@ class Capri(QObject):
         if self.local:
             self.local.on_model_change = self._remember_model
         self.actions = Actions(cfg, BASE, self.ai, save=save_entry)
+        self.ai_router = AIRouter(cfg, local=self.local, cloud=self.ai, offline=self._offline_answer)
         self.config_mtime = self._config_mtime()
         self.zapret_checked = False  # предлагали ли уже исправить zapret в этом сеансе
         self.actions.local = self.local
@@ -367,6 +369,11 @@ class Capri(QObject):
     def _on_reminder(self, text):
         """Планировщик сработал — озвучиваем в рабочем потоке, а не в его собственном."""
         self.jobs.put(("say", line("reminder_due", t=text)))
+
+    def _offline_answer(self, cmd):
+        """Последняя ступень цепочки ИИ: поиск или честное «не знаю»."""
+        reply = self.actions.fallback(cmd, force_search=bool(self.local))
+        return reply.text if reply else None
 
     def shutdown(self):
         """Корректно останавливаем фоновые потоки при выходе."""
@@ -568,26 +575,12 @@ class Capri(QObject):
         if reply is not None and reply.action in ("mic_info", "mic_next"):
             reply = self.mic_command(reply.action)
         if reply is None:
-            if self.cfg.get("enable_ai") and self.ai.available:
-                source = "claude"
-                try:
-                    reply = Reply(self.ai.ask(cmd), "answer")
-                except Exception:
-                    log.exception("Облачный ИИ не ответил")
-                    reply = None
-            if reply is None:
-                answer = None
-                if self.local:
-                    source = "local"
-                    try:
-                        answer = self.local.ask(cmd)
-                    except Exception:
-                        log.exception("Локальный ИИ не ответил")
-                if answer:
-                    reply = Reply(answer, "answer")
-                else:
-                    source = "fallback"
-                    reply = self.actions.fallback(cmd, force_search=bool(self.local))
+            answer, source = self.ai_router.ask(cmd)
+            if answer:
+                reply = Reply(answer, "answer")
+            else:
+                source = "fallback"
+                reply = self.actions.fallback(cmd, force_search=bool(self.local))
         log.info("Интент: %s; источник ответа: %s", self.actions.last_intent or "none", source)
         if reply.action == "answer" and self.cfg.get("teleport_on_answer"):
             self.hop.emit()  # отвечает, скача по экрану красной молнией
