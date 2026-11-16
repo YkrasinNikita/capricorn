@@ -30,6 +30,7 @@ RANGES = {
     "listen_window_seconds": (1, 120),
     "followup_seconds": (0, 120),
     "hide_after_seconds": (0, 600),
+    "stt_min_speech_ms": (0, 5000),
 }
 
 

@@ -226,6 +226,10 @@ def handle(cmd, match):                # вернуть Reply(...) или None
 | `voice`, `voice_pitch`, `voice_rate` | голос, высота и скорость речи |
 | `voice_fx` | цифровая обработка голоса: `0` — чистый, `1` — полный эффект |
 | `use_google_stt` | точнее распознавать фразы через Google (нужен интернет) |
+| `stt_backend` | движок распознавания: `"vosk"` (офлайн, по умолчанию) или `"whisper"` (faster-whisper) |
+| `stt_grammar` | подсказки Vosk: список фраз, под которые сужается словарь (пусто — без ограничений) |
+| `stt_min_speech_ms` | фраза короче этого числа миллисекунд считается шумом (по умолчанию `300`) |
+| `stt_whisper_model`, `stt_whisper_compute` | модель и режим вычислений Whisper: `"small"`, `"int8"` |
 | `barge_in` | можно ли перебивать Капри голосом |
 | `type_press_enter` | отправлять ли сообщение после «напиши …» |
 | `chatter`, `chatter_min_minutes`, `chatter_max_minutes` | появляется ли сама и как часто; включить/выключить — галочка в меню трея «Появляться самой» |
@@ -259,6 +263,32 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 и в `config.json`: `"tts_engine": "silero"`, `"silero_voice": "kseniya"` (или `xenia`, `baya`).
 Модель (~40 МБ) скачается сама. Лицензия Silero — только для некоммерческого использования.
+</details>
+
+<details>
+<summary><b>Распознавание речи: Vosk и Whisper</b></summary>
+
+По умолчанию речь распознаёт Vosk — офлайн и без настройки. Если он путает слова:
+
+- `"stt_grammar"` — список фраз-подсказок: Vosk будет искать слова только из них (меньше ложных
+  срабатываний, но и свободная речь распознаётся хуже). Пустой список — обычный режим.
+- `"stt_min_speech_ms"` — короткие обрывки тишины и шума не попадают в команды (`300` по умолчанию).
+- `"mic_sensitivity"` и `"mic_gain"` — чувствительность и усиление микрофона (меню трея → «Микрофон»).
+
+Точнее на свободной речи — [faster-whisper](https://github.com/SYSTRAN/faster-whisper):
+```
+pip install faster-whisper
+```
+и в `config.json`: `"stt_backend": "whisper"`, `"stt_whisper_model": "small"` (можно `base` — быстрее,
+`medium` — точнее). Модель скачается один раз, дальше работает офлайн. Vosk остаётся основным движком.
+
+Замер качества на своих фразах:
+```
+python tools/stt_eval.py --record      # записать 25 фраз с микрофона
+python tools/stt_eval.py --backend vosk
+python tools/stt_eval.py --backend whisper
+```
+Скрипт покажет, сколько фраз распознано точно и среднюю точность по словам — удобно сравнить до/после.
 </details>
 
 ---

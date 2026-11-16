@@ -26,8 +26,8 @@ from persona import line
 from scheduler import Scheduler
 from avatar import Avatar
 import zapret
-from voice import (Listener, Speaker, default_input_name, google_stt, input_devices, make_glitch_sound,
-                   play_sound_async)
+from voice import (Listener, Speaker, backend_kind, default_input_name, google_stt, input_devices,
+                   make_glitch_sound, play_sound_async)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
@@ -58,6 +58,11 @@ DEFAULTS = {
     "model": "claude-opus-5-5",
     "wake_words": ["капри", "каприз", "капре", "кепри", "капли"],
     "use_google_stt": True,
+    "stt_backend": "vosk",       # распознавание речи: vosk (офлайн, по умолчанию) или whisper (faster-whisper)
+    "stt_grammar": [],           # подсказки Vosk: список фраз; пусто — без ограничения словаря
+    "stt_min_speech_ms": 300,    # фраза короче этого — шум и не попадает в команды
+    "stt_whisper_model": "small",
+    "stt_whisper_compute": "int8",
     "voice": "ru-RU-SvetlanaNeural",
     "tts_engine": "edge",
     "tts_cache": True,       # кэш озвучки в cache/tts: повторные фразы звучат без синтеза и сети
@@ -236,12 +241,20 @@ class Capri(QObject):
         if self.local:
             threading.Thread(target=self.local.start_server, daemon=True).start()
         model = os.path.join(BASE, self.cfg["vosk_model"])
-        if os.path.isdir(model):
-            log.info("Модель распознавания: %s", model)
+        backend = self.cfg.get("stt_backend") or "vosk"
+        if os.path.isdir(model) or backend_kind(backend) == "whisper":
+            log.info("Распознавание речи: %s", backend_kind(backend))
+            if backend_kind(backend) == "vosk":
+                log.info("Модель распознавания: %s", model)
             self.listener = Listener(model, self.on_final, self.on_partial, self.on_listener_error,
                                      device_name=self.cfg.get("mic_device") or None,
                                      gain=float(self.cfg.get("mic_gain", 1.0)),
-                                     sensitivity=int(self.cfg.get("mic_sensitivity", 100)))
+                                     sensitivity=int(self.cfg.get("mic_sensitivity", 100)),
+                                     backend=backend,
+                                     grammar=self.cfg.get("stt_grammar") or None,
+                                     min_speech_ms=int(self.cfg.get("stt_min_speech_ms", 300)),
+                                     whisper={"model": self.cfg.get("stt_whisper_model", "small"),
+                                              "compute_type": self.cfg.get("stt_whisper_compute", "int8")})
             self.listener.start()
         else:
             log.error("Модель распознавания не найдена: %s", model)

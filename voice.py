@@ -128,14 +128,75 @@ def resolve_device(name):
 
 LEVEL_SCALE = 6.0  # громкость для индикатора: обычная речь у микрофона даёт примерно половину шкалы
 GATE_MAX = 0.35    # порог при самой низкой чувствительности — тише этого звук не слышен
+MIN_VOICE_LEVEL = 0.02  # тише этого — шум, даже если чувствительность выкручена на максимум
+NOISE_WORDS = {"и", "а", "ну", "э", "мм", "м", "хм", "у", "о", "в", "с"}  # «слова» из тишины
+
+
+class VoskBackend:
+    """Обёртка над Vosk: тот же интерфейс, что у альтернативных движков (stt_whisper)."""
+
+    def __init__(self, model_path, grammar=None):
+        import vosk
+        vosk.SetLogLevel(-1)
+        model = vosk.Model(ascii_model_path(model_path))
+        self.grammar = [str(p) for p in grammar] if grammar else None
+        if self.grammar:
+            # грамматика сужает словарь под команды: меньше ложных срабатываний на болтовне
+            self.rec = vosk.KaldiRecognizer(model, RATE, json.dumps(self.grammar, ensure_ascii=False))
+            log.info("Vosk: словарь ограничен %d фразами-подсказками", len(self.grammar))
+        else:
+            self.rec = vosk.KaldiRecognizer(model, RATE)
+
+    def reset(self):
+        self.rec.Reset()
+
+    def accept(self, data):
+        """Законченная фраза (текст) или None, если фраза ещё не закончилась."""
+        if self.rec.AcceptWaveform(data):
+            return json.loads(self.rec.Result()).get("text", "").strip()
+        return None
+
+    def partial(self):
+        return json.loads(self.rec.PartialResult()).get("partial", "")
+
+    def final(self):
+        return json.loads(self.rec.FinalResult()).get("text", "").strip()
+
+    def transcribe(self, audio, block=4000):
+        """Распознать готовую запись целиком (для tools/stt_eval.py)."""
+        self.reset()
+        parts = []
+        for i in range(0, len(audio), block):
+            text = self.accept(audio[i:i + block])
+            if text:
+                parts.append(text)
+        tail = self.final()
+        if tail:
+            parts.append(tail)
+        return " ".join(parts).strip()
+
+
+def backend_kind(name):
+    """Название движка распознавания: "whisper" или "vosk" (по умолчанию)."""
+    return "whisper" if (name or "").strip().lower() in ("whisper", "faster-whisper", "faster_whisper") else "vosk"
+
+
+def make_backend(name, model_path, grammar=None, whisper=None):
+    """Создать движок распознавания. Vosk остаётся основным и полностью офлайн."""
+    if backend_kind(name) == "whisper":
+        from stt_whisper import WhisperBackend
+        return WhisperBackend(**(whisper or {}))
+    return VoskBackend(model_path, grammar)
 
 
 class Listener(threading.Thread):
     """Постоянно слушает микрофон. on_final(text, audio_bytes) — законченная фраза,
     on_partial(text) — промежуточный результат (для быстрой реакции на имя).
-    Микрофон можно сменить на ходу через set_device()."""
+    Микрофон можно сменить на ходу через set_device().
+    backend — "vosk" (по умолчанию, офлайн) или "whisper" (faster-whisper)."""
 
-    def __init__(self, model_path, on_final, on_partial, on_error, device_name=None, gain=1.0, sensitivity=100):
+    def __init__(self, model_path, on_final, on_partial, on_error, device_name=None, gain=1.0, sensitivity=100,
+                 backend="vosk", grammar=None, min_speech_ms=300, whisper=None):
         super().__init__(daemon=True)
         self.model_path = model_path
         self.on_final = on_final
@@ -149,6 +210,11 @@ class Listener(threading.Thread):
         self.gain = gain                # громкость ввода для Капри: 1 — как есть, 2 — вдвое громче
         self.sensitivity = sensitivity  # 100 — слышит всё, меньше — тихие звуки (шум, фон) отбрасываются
         self.level = 0.0                # текущая громкость с микрофона 0..1 — для индикатора в настройках
+        self.backend = backend_kind(backend)
+        self.grammar = list(grammar or [])
+        self.min_speech_ms = max(0, int(min_speech_ms))  # короче — это шум, а не команда
+        self.whisper = dict(whisper or {})
+
 
     def set_device(self, name):
         self.device_name = name or None
@@ -171,14 +237,16 @@ class Listener(threading.Thread):
 
     def run(self):
         try:
-            import sounddevice as sd
-            import vosk
-            vosk.SetLogLevel(-1)
-            model = vosk.Model(ascii_model_path(self.model_path))
-            rec = vosk.KaldiRecognizer(model, RATE)
+            rec = make_backend(self.backend, self.model_path, self.grammar, self.whisper)
         except Exception as e:
             log.exception("Модель распознавания не загрузилась")
             self.on_error(str(e), "model")
+            return
+        try:
+            import sounddevice as sd
+        except Exception as e:
+            log.exception("Микрофон недоступен")
+            self.on_error(str(e))
             return
         while True:
             self.switch.clear()
@@ -206,7 +274,7 @@ class Listener(threading.Thread):
                 self.active_name = sd.query_devices(device if device is not None else sd.default.device[0])["name"]
             except Exception:
                 self.active_name = default_input_name()
-            rec.Reset()
+            rec.reset()
             try:
                 self._listen(stream, q, rec)
             except Exception as e:
@@ -214,37 +282,56 @@ class Listener(threading.Thread):
                 self.on_error(str(e))
                 return
 
+    def accept_text(self, text, voiced_ms):
+        """Пропускать ли распознанную фразу. Короткие «слова из тишины» — не команды."""
+        words = text.split()
+        if not words:
+            return False
+        if voiced_ms < self.min_speech_ms:
+            return False
+        if len(words) == 1 and words[0].lower() in NOISE_WORDS and voiced_ms < 600:
+            return False
+        return True
+
     def _listen(self, stream, q, rec):
         with stream:
-            log.info("Микрофон открыт: %s", self.active_name)
+            log.info("Микрофон открыт: %s (движок: %s)", self.active_name, self.backend)
             buf = bytearray()
+            voiced = 0.0  # сколько миллисекунд речи было в текущей фразе
             was_muted = False
             while not self.switch.is_set():
                 try:
                     data = self.process(q.get(timeout=0.5))
                 except queue.Empty:
                     continue
+                voiced += len(data) / 2 / RATE * 1000 if self.level >= max(self.gate_level(), MIN_VOICE_LEVEL) else 0
                 if self.muted.is_set():
                     was_muted = True
                     continue
                 if was_muted or self.reset_req.is_set():
                     was_muted = False
                     self.reset_req.clear()
-                    rec.Reset()
+                    rec.reset()
                     buf.clear()
+                    voiced = 0.0
                 buf += data
-                if rec.AcceptWaveform(data):
-                    text = json.loads(rec.Result()).get("text", "").strip()
+                text = rec.accept(data)
+                if text is not None:
                     audio = bytes(buf)
                     buf.clear()
-                    if text:
+                    if text and self.accept_text(text, voiced):
                         self.on_final(text, audio)
+                    else:
+                        log.info("Отбросила шум: %r (%d мс речи)", text, voiced)
+                    voiced = 0.0
                 else:
-                    part = json.loads(rec.PartialResult()).get("partial", "")
+                    part = rec.partial()
                     if part:
                         self.on_partial(part)
                     if len(buf) > RATE * 2 * 25:
                         del buf[:RATE * 2 * 5]
+                        voiced = min(voiced, len(buf) / 2 / RATE * 1000)
+
 
 
 def google_stt(audio, language="ru-RU"):
