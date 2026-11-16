@@ -57,6 +57,7 @@ DEFAULTS = {
     "use_google_stt": True,
     "voice": "ru-RU-SvetlanaNeural",
     "tts_engine": "edge",
+    "tts_cache": True,       # кэш озвучки в cache/tts: повторные фразы звучат без синтеза и сети
     "voice_rate": "+10%",
     "voice_pitch": "+15Hz",
     "voice_shift": 0,

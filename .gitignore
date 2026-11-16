@@ -18,6 +18,9 @@ capri.log*
 reports/
 samples/
 
+# кэш озвучки
+cache/
+
 # служебное
 __pycache__/
 *.pyc

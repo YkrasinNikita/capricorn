@@ -1,6 +1,7 @@
 """Распознавание речи (Vosk офлайн + Google для точности) и синтез голоса."""
 import asyncio
 import ctypes
+import hashlib
 import json
 import logging
 import math
@@ -16,6 +17,44 @@ import wave
 
 log = logging.getLogger("capri")
 RATE = 16000
+
+# ----- кэш озвучки -----
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = os.path.join(BASE_DIR, "cache", "tts")
+CACHE_LIMIT = 200 * 1024 * 1024  # 200 МБ
+CACHE_MAX_TEXT = 500            # длинные ответы не кэшируем — они почти не повторяются
+
+
+def tts_cache_key(text, voice, engine, rate, pitch, extra=""):
+    """sha256 от текста и всех параметров синтеза: одинаковый звук — одинаковый ключ."""
+    raw = "\x1f".join((text, voice, engine, rate, pitch, str(extra)))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cleanup_tts_cache(folder=CACHE_DIR, limit=CACHE_LIMIT):
+    """LRU-очистка по размеру: удаляем самые старые файлы, пока кэш не влезет в лимит.
+    Возвращает итоговый размер в байтах. Ошибки файловой системы не роняют озвучку."""
+    try:
+        files = []
+        for entry in os.scandir(folder):
+            try:
+                if entry.is_file():
+                    stat = entry.stat()
+                    files.append((stat.st_mtime, stat.st_size, entry.path))
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    total = sum(size for _, size, _ in files)
+    for _, size, path in sorted(files):
+        if total <= limit:
+            break
+        try:
+            os.remove(path)
+            total -= size
+        except OSError:
+            pass
+    return total
 
 
 def _model_complete(folder):
@@ -413,7 +452,7 @@ def silero_prosody(sentence, base, rnd, lively=True):
 
 
 class Speaker:
-    def __init__(self, cfg):
+    def __init__(self, cfg, cache_dir=None, cache_limit=None):
         self.voice = cfg.get("voice", "ru-RU-SvetlanaNeural")
         self.rate = cfg.get("voice_rate", "+5%")
         self.pitch = cfg.get("voice_pitch", "+8Hz")
@@ -428,8 +467,15 @@ class Speaker:
         self.stop_event = threading.Event()
         self.volume = int(cfg.get("voice_volume", 100))  # громкость Капри 0..100, общая громкость Windows не меняется
         self.edge_error = None  # почему не сработал голос Microsoft в последний раз (None — сработал)
+        self.privacy = bool(cfg.get("privacy_mode", False))   # только офлайн-голос, без edge-tts
+        self.cache_enabled = bool(cfg.get("tts_cache", True))
+        self.cache_dir = os.fspath(cache_dir or CACHE_DIR)
+        self.cache_limit = int(cache_limit or CACHE_LIMIT)
         if self.engine == "silero":  # прогреваем модель заранее, чтобы первая фраза не тормозила
             threading.Thread(target=self._warmup, daemon=True).start()
+        if self.cache_enabled:  # фоновая LRU-очистка, чтобы папка не росла бесконечно
+            threading.Thread(target=cleanup_tts_cache, args=(self.cache_dir, self.cache_limit),
+                             daemon=True).start()
 
     def _warmup(self):
         try:
@@ -447,6 +493,13 @@ class Speaker:
         text = clean_for_speech(text)
         if not text:
             return False
+        if self.privacy:  # приватный режим: никакого edge-tts и облака
+            self.edge_error = None
+            try:
+                return self._private(text)
+            except Exception:
+                log.exception("Офлайн-голос в приватном режиме не сработал")
+                return False
         try:
             interrupted = self._edge(text)
             self.edge_error = None
@@ -483,6 +536,8 @@ class Speaker:
     def render(self, text, dst):
         """Синтез в wav-файл dst (с живой интонацией и эффектами) или в mp3, если обработка не удалась.
         Возвращает путь к готовому файлу."""
+        if self.privacy:
+            raise RuntimeError("приватный режим: облачный TTS запрещён")
         if self.engine == "silero":
             try:
                 return self.render_silero(text, dst)
@@ -516,11 +571,92 @@ class Speaker:
             log.exception("Обработка голоса не удалась, говорю чистым голосом")
             return parts[0]
 
+    # ----- кэш озвучки -----
+    def _cache_extra(self):
+        """Всё, что влияет на звук, кроме текста и голоса: эффекты, громкость, движок Silero."""
+        return "|".join((f"{self.fx:.3f}", f"{self.shift:.3f}", str(self.lively), str(self.volume),
+                         self.silero_voice, self.silero_pitch))
+
+    def _cache_key(self, text):
+        return tts_cache_key(text, self.voice, self.engine, self.rate, self.pitch, self._cache_extra())
+
+    def _cache_allowed(self, text):
+        return self.cache_enabled and not self.privacy and len(text) <= CACHE_MAX_TEXT
+
+    def _cache_paths(self, text):
+        key = self._cache_key(text)
+        return [os.path.join(self.cache_dir, key + ext) for ext in (".wav", ".mp3")]
+
+    def _cache_hit(self, text):
+        """Путь к целому файлу в кэше или None. Битые/пустые файлы игнорируем."""
+        if not self._cache_allowed(text):
+            return None
+        for path in self._cache_paths(text):
+            try:
+                if os.path.getsize(path) > 0:
+                    return path
+            except OSError:
+                continue
+        return None
+
+    def _drop_cache(self, text):
+        for path in self._cache_paths(text):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def _render_cached(self, text, force=False):
+        """Синтез с кэшем. Возвращает (путь, был_ли_это_кэш)."""
+        if not force:
+            hit = self._cache_hit(text)
+            if hit:
+                log.info("Озвучка из кэша: %s", os.path.basename(hit))
+                return hit, True
+        tmp = os.path.join(tempfile.gettempdir(), f"capri_tts_{os.getpid()}_render.wav")
+        path = self.render(text, tmp)
+        if not path or not os.path.isfile(path) or not self._cache_allowed(text):
+            return path, False
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in (".wav", ".mp3"):
+            ext = ".wav"
+        dst = os.path.join(self.cache_dir, self._cache_key(text) + ext)
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            if os.path.abspath(path) != os.path.abspath(dst):
+                shutil.copyfile(path, dst)
+            threading.Thread(target=cleanup_tts_cache, args=(self.cache_dir, self.cache_limit),
+                             daemon=True).start()  # фоновая LRU-очистка после записи
+            return dst, False
+        except OSError:
+            log.exception("Не удалось сохранить озвучку в кэш")
+            return path, False
+
     def _edge(self, text):
-        path = self.render(text, self.fx_path)
+        if self.privacy:  # страховка: в приватном режиме в сеть не ходим
+            return self._private(text)
+        path, from_cache = self._render_cached(text)
         if self.stop_event.is_set():
             return True
-        return play_mp3(path, self.stop_event, self.volume)
+        try:
+            return play_mp3(path, self.stop_event, self.volume)
+        except Exception:
+            if not from_cache:  # не кэш — значит, дело не в повреждённом файле
+                raise
+            log.info("Файл из кэша не открылся, синтезирую заново")
+            self._drop_cache(text)
+            path, _ = self._render_cached(text, force=True)
+            return play_mp3(path, self.stop_event, self.volume)
+
+    def _private(self, text):
+        """Офлайн-голос: Silero, если модель уже скачана, иначе голос Windows (SAPI)."""
+        if self.engine == "silero" and os.path.exists(SILERO_PATH):
+            try:
+                self.render_silero(text, self.fx_path)
+                return play_mp3(self.fx_path, self.stop_event, self.volume)
+            except Exception:
+                log.exception("Silero не сработал в приватном режиме, говорю голосом Windows")
+        return self._sapi(text)
 
     def _sapi(self, text):
         import comtypes.client
