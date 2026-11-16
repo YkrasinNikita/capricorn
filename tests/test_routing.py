@@ -88,7 +88,7 @@ def test_registry_names_and_order():
     """Все имена уникальны, обработчики описаны строками или callable, реестр не пустой."""
     names = [name for name, _, _ in ROUTES]
     assert len(names) == len(set(names))
-    assert len(ROUTES) == 55
+    assert len(ROUTES) == 52
     for name, pattern, handler in ROUTES:
         assert isinstance(name, str) and name
         assert pattern

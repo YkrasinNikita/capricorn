@@ -285,16 +285,6 @@ class SystemMixin:
                           for n, v in top_mem)
         return Reply(line("top_procs", cpu=c_txt, mem=m_txt))
 
-    def time(self, c, m):
-        return Reply(line("time", t=f"{datetime.datetime.now():%H:%M}"))
-
-    def date(self, c, m):
-        months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
-                  "сентября", "октября", "ноября", "декабря"]
-        days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-        d = datetime.date.today()
-        return Reply(line("date", t=f"{days[d.weekday()]}, {d.day} {months[d.month - 1]}"))
-
     def screenshot(self, c, m):
         from PIL import ImageGrab
         folder = os.path.join(os.path.expanduser("~"), "Pictures", "Capri")

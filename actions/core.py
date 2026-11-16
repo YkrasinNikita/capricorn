@@ -16,6 +16,7 @@ from .files import FilesMixin
 from .keys import KeysMixin, send_keys
 from .media_cmds import MediaMixin
 from .notes_cmds import NotesMixin
+from .plugins import apply_plugins, load_plugins
 from .reminders import RemindersMixin
 from .routes import FORGET_RE, FORGET_REPLY_RE, REMEMBER_RE, REPLY_RE, ROUTES
 from .system import SystemMixin
@@ -45,6 +46,11 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
         self.scheduler = None         # напоминания (scheduler.py), подключает main
         self.last_intent = None       # имя сработавшего интента — для логов и тестов
         self.routes = ROUTES
+        self.plugins = load_plugins(cfg.get("plugins"))  # навыки из actions/plugins
+
+    def reload_plugins(self, enabled=None):
+        """Перечитать плагины (раздел "plugins" в config.json поменяли на лету)."""
+        self.plugins = load_plugins(enabled)
 
     def handle(self, cmd):
         c = norm(cmd)
@@ -145,6 +151,10 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
                     return Reply(line("error", e=e))
                 if r:
                     return r
+        plugin = apply_plugins(self.plugins, c)  # новые навыки: actions/plugins/*.py
+        if plugin:
+            self.last_intent, r = plugin
+            return r
         return None
 
     # --- свои сайты и программы ---
@@ -250,9 +260,6 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
 
     def hide(self, c, m):
         return Reply(line("hide"), "hide")
-
-    def wave(self, c, m):
-        return Reply(line("wave"), "wave")
 
     def roam(self, c, m):
         return Reply(line("roam"), "roam")

@@ -53,6 +53,7 @@ DEFAULTS = {
     "mic_sensitivity": 100,  # 100 — слышит всё; меньше — тихий шум и фон отбрасываются
     "browser": "",
     "replies": {},           # свои ответы: {"фраза": "что ответит Капри"} — проверяются раньше команд и нейросети  # в каком браузере открывать сайты: "хром", "яндекс", "опера"… или путь к exe; "" — как в Windows
+    "plugins": {},           # навыки из actions/plugins: {"time": false} — отключить конкретный плагин
     "anthropic_api_key": "",
     "model": "claude-opus-5-5",
     "wake_words": ["капри", "каприз", "капре", "кепри", "капли"],
@@ -445,9 +446,11 @@ class Capri(QObject):
                 self.say(CONFIG_ERROR)
             return
         self.config_mtime = mtime
-        for key in ("sites", "apps", "app_aliases", "search_when_unsure", "browser", "chatter", "replies"):
+        for key in ("sites", "apps", "app_aliases", "search_when_unsure", "browser", "chatter", "replies",
+                    "plugins"):
             self.cfg[key] = fresh[key]
         self.actions.set_lists(self.cfg)
+        self.actions.reload_plugins(self.cfg.get("plugins"))
         privacy = bool(fresh.get("privacy_mode"))
         if privacy != bool(self.cfg.get("privacy_mode")):
             self.set_privacy(privacy, announce=speak, persist=False)  # уже записано в файле
