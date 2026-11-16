@@ -471,7 +471,9 @@ class Speaker:
         self.cache_enabled = bool(cfg.get("tts_cache", True))
         self.cache_dir = os.fspath(cache_dir or CACHE_DIR)
         self.cache_limit = int(cache_limit or CACHE_LIMIT)
-        if self.engine == "silero":  # прогреваем модель заранее, чтобы первая фраза не тормозила
+        # прогреваем модель заранее, чтобы первая фраза не тормозила; в приватном режиме
+        # не скачиваем её из сети — только уже установленную
+        if self.engine == "silero" and (not self.privacy or os.path.exists(SILERO_PATH)):
             threading.Thread(target=self._warmup, daemon=True).start()
         if self.cache_enabled:  # фоновая LRU-очистка, чтобы папка не росла бесконечно
             threading.Thread(target=cleanup_tts_cache, args=(self.cache_dir, self.cache_limit),

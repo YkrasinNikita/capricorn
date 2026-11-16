@@ -37,6 +37,7 @@ log.info("Python %s", sys.version.split()[0])
 
 DEFAULTS = {
     "enable_ai": False,
+    "privacy_mode": False,   # только офлайн: Vosk, локальная модель, локальный TTS; облако запрещено
     "local_ai": True,
     "local_model": "qwen3:8b",
     "barge_in": True,
@@ -154,6 +155,11 @@ STOP_RE = re.compile(r"\b(стоп|хватит|молчи|замолчи|пом
                      r"заткнись|умолкни)\b")
 
 
+def google_stt_allowed(cfg):
+    """Google STT — сетевой сервис: в приватном режиме не вызываем даже при use_google_stt=true."""
+    return bool(cfg.get("use_google_stt")) and not bool(cfg.get("privacy_mode"))
+
+
 def fullscreen_app_active():
     """Открыта игра или видео на весь экран — тогда не лезем со спонтанными репликами."""
     try:
@@ -180,6 +186,7 @@ class Capri(QObject):
     mode = Signal(str, float)
     subtitle = Signal(str)
     quit_app = Signal()
+    privacy_changed = Signal(bool)
     anim = Signal(str)
     roam = Signal()
     hop = Signal()
@@ -222,6 +229,7 @@ class Capri(QObject):
             self.glitch_wav = None
 
     def start(self):
+        log.info("Режим приватности: %s", "включён" if self.cfg.get("privacy_mode") else "выключен")
         threading.Thread(target=self._worker, daemon=True).start()
         self.scheduler.start()  # просроченные озвучатся один раз при старте
         if self.local:
@@ -371,8 +379,10 @@ class Capri(QObject):
         self.jobs.put(("say", line("reminder_due", t=text)))
 
     def _offline_answer(self, cmd):
-        """Последняя ступень цепочки ИИ: поиск или честное «не знаю»."""
-        reply = self.actions.fallback(cmd, force_search=bool(self.local))
+        """Последняя ступень цепочки ИИ: поиск или честное «не знаю».
+        В приватном режиме поиск в браузере не открываем — это сетевой запрос."""
+        reply = self.actions.fallback(cmd, force_search=bool(self.local),
+                                      allow_search=not self.cfg.get("privacy_mode"))
         return reply.text if reply else None
 
     def shutdown(self):
@@ -393,6 +403,21 @@ class Capri(QObject):
         self.cfg["search_when_unsure"] = bool(on)
         save_setting("search_when_unsure", bool(on))
         log.info("Поиск в браузере, если не знаю: %s", "включён" if on else "выключен")
+
+    def set_privacy(self, on, announce=True, persist=True):
+        """Режим приватности: только офлайн. Работает без перезапуска; в лог — только факт режима."""
+        on = bool(on)
+        changed = on != bool(self.cfg.get("privacy_mode"))
+        self.cfg["privacy_mode"] = on
+        self.speaker.privacy = on
+        if changed:
+            log.info("Режим приватности: %s", "включён" if on else "выключен")
+            self.privacy_changed.emit(on)
+        if persist:
+            save_setting("privacy_mode", on)
+            self.config_mtime = self._config_mtime()  # своя же запись — не перечитывать зря
+        if announce:
+            self.jobs.put(("say", line("privacy_on" if on else "privacy_off")))
 
     def _remember_model(self, name):
         """Ollama нашла другую скачанную модель — записываем её, чтобы не искать при каждом запуске."""
@@ -423,6 +448,11 @@ class Capri(QObject):
         for key in ("sites", "apps", "app_aliases", "search_when_unsure", "browser", "chatter", "replies"):
             self.cfg[key] = fresh[key]
         self.actions.set_lists(self.cfg)
+        privacy = bool(fresh.get("privacy_mode"))
+        if privacy != bool(self.cfg.get("privacy_mode")):
+            self.set_privacy(privacy, announce=speak, persist=False)  # уже записано в файле
+        else:
+            self.speaker.privacy = privacy
         log.info("config.json перечитан")
 
     # ----- кнопки -----
@@ -542,7 +572,7 @@ class Capri(QObject):
             self.summon.emit()
             self.mode.emit("thinking", 0.0)
             self.subtitle.emit("> " + cmd)
-            if self.cfg.get("use_google_stt"):
+            if google_stt_allowed(self.cfg):
                 better = google_stt(audio)
                 if better:
                     better = better.lower()
@@ -580,7 +610,8 @@ class Capri(QObject):
                 reply = Reply(answer, "answer")
             else:
                 source = "fallback"
-                reply = self.actions.fallback(cmd, force_search=bool(self.local))
+                reply = self.actions.fallback(cmd, force_search=bool(self.local),
+                                              allow_search=not self.cfg.get("privacy_mode"))
         log.info("Интент: %s; источник ответа: %s", self.actions.last_intent or "none", source)
         if reply.action == "answer" and self.cfg.get("teleport_on_answer"):
             self.hop.emit()  # отвечает, скача по экрану красной молнией
@@ -655,19 +686,24 @@ class Capri(QObject):
             self.jobs.put(("say", line("zapret_offer")))
 
 
-def tray_icon():
+def tray_icon(privacy=False):
+    """Иконка в трее. В приватном режиме — зелёная с белой меткой-щитом."""
     pm = QPixmap(64, 64)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor(255, 34, 96))
-    p.setPen(QPen(QColor(150, 70, 255), 4))
+    p.setBrush(QColor(40, 200, 130) if privacy else QColor(255, 34, 96))
+    p.setPen(QPen(QColor(30, 220, 160) if privacy else QColor(150, 70, 255), 4))
     p.drawEllipse(4, 4, 56, 56)
     p.setBrush(QColor(6, 24, 20))
     p.setPen(QPen(QColor(40, 255, 150), 4))
     p.drawEllipse(14, 22, 36, 20)
     p.setBrush(QColor(40, 255, 150))
     p.drawEllipse(27, 27, 10, 10)
+    if privacy:
+        p.setBrush(QColor(240, 255, 250))
+        p.setPen(QPen(QColor(20, 120, 80), 2))
+        p.drawEllipse(46, 2, 16, 16)  # метка приватного режима
     p.end()
     return QIcon(pm)
 
@@ -795,9 +831,16 @@ def main():
             chatter_act.toggled.connect(capri.set_chatter)
             menu.addAction(chatter_act)
 
-            def sync_search(a=search_act, b=chatter_act):
+            # режим приватности: только офлайн, без сети
+            privacy_act = QAction("Режим приватности", menu)
+            privacy_act.setCheckable(True)
+            privacy_act.toggled.connect(capri.set_privacy)
+            menu.addAction(privacy_act)
+
+            def sync_search(a=search_act, b=chatter_act, d=privacy_act):
                 capri.reload_config_if_changed(speak=False)  # могли поменять в config.json руками
-                for act, key, default in ((a, "search_when_unsure", True), (b, "chatter", True)):
+                for act, key, default in ((a, "search_when_unsure", True), (b, "chatter", True),
+                                          (d, "privacy_mode", False)):
                     act.blockSignals(True)
                     act.setChecked(bool(capri.cfg.get(key, default)))
                     act.blockSignals(False)
@@ -807,12 +850,19 @@ def main():
         act.triggered.connect(fn)
         menu.addAction(act)
 
-    tray = QSystemTrayIcon(tray_icon())
+    tray = QSystemTrayIcon(tray_icon(bool(cfg.get("privacy_mode"))))
     tray.setToolTip("Капри — голосовой ассистент")
     tray.setContextMenu(menu)
     tray.activated.connect(lambda r: capri.call_from_click()
                            if r == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
+
+    def apply_privacy_icon(on):
+        tray.setIcon(tray_icon(bool(on)))
+        tray.setToolTip("Капри — приватный режим (только офлайн)" if on else "Капри — голосовой ассистент")
+    capri.privacy_changed.connect(apply_privacy_icon)
+    apply_privacy_icon(bool(cfg.get("privacy_mode")))
+
     avatar.menu_requested.connect(lambda pos: menu.popup(pos))
 
     capri.start()

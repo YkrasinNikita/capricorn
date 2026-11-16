@@ -6,6 +6,7 @@ from config_schema import CONFIG_VERSION, load_config_file, merge_defaults, migr
 
 DEFAULTS = {
     "enable_ai": False,
+    "privacy_mode": False,
     "voice_volume": 100,
     "mic_sensitivity": 100,
     "local_model": "qwen3:8b",
@@ -110,3 +111,10 @@ def test_bool_coercion_variants():
     for raw, expected in (("true", True), ("да", True), ("1", True), ("false", False), ("нет", False), (0, False)):
         fixed, _ = validate_config({"enable_ai": raw}, DEFAULTS)
         assert fixed["enable_ai"] is expected
+
+
+def test_privacy_mode_is_boolean_and_kept():
+    fixed, _ = validate_config({"privacy_mode": "да"}, DEFAULTS)
+    assert fixed["privacy_mode"] is True
+    fixed, _ = validate_config({"privacy_mode": 0}, DEFAULTS)
+    assert fixed["privacy_mode"] is False
