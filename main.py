@@ -12,8 +12,8 @@ import time
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, QMenu, QSlider, QSystemTrayIcon,
-                               QWidget, QWidgetAction)
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, QMenu, QMessageBox, QSlider,
+                               QSystemTrayIcon, QWidget, QWidgetAction)
 
 from actions import Actions, Reply
 from ai import AI
@@ -25,15 +25,25 @@ from notes import Notes
 from persona import line
 from scheduler import Scheduler
 from avatar import Avatar
+import model_setup
+import version
 import zapret
 from voice import (Listener, Speaker, backend_kind, default_input_name, google_stt, input_devices,
                    make_glitch_sound, play_sound_async)
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+# В собранной версии (PyInstaller) программа и её файлы лежат в папке exe, а ресурсы — во временной.
+FROZEN = bool(getattr(sys, "frozen", False))
+BASE = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 
+
+def resource_path(*parts):
+    """Путь к упакованным файлам (assets): рядом с исходниками или внутри сборки."""
+    return os.path.join(getattr(sys, "_MEIPASS", BASE), *parts)
+
+
 log = setup_logging(BASE)
-log.info("Python %s", sys.version.split()[0])
+log.info("%s, Python %s", version.version_line(), sys.version.split()[0])
 
 DEFAULTS = {
     "enable_ai": False,
@@ -193,6 +203,7 @@ class Capri(QObject):
     subtitle = Signal(str)
     quit_app = Signal()
     privacy_changed = Signal(bool)
+    model_missing = Signal()
     anim = Signal(str)
     roam = Signal()
     hop = Signal()
@@ -228,6 +239,7 @@ class Capri(QObject):
         self.last_activity = time.time()
         self.recent_chatter = []
         self.listener = None
+        self._chatter_started = False
         self.glitch_wav = os.path.join(tempfile.gettempdir(), "capri_glitch.wav")
         try:
             make_glitch_sound(self.glitch_wav, self.speaker.volume)
@@ -240,31 +252,67 @@ class Capri(QObject):
         self.scheduler.start()  # просроченные озвучатся один раз при старте
         if self.local:
             threading.Thread(target=self.local.start_server, daemon=True).start()
-        model = os.path.join(BASE, self.cfg["vosk_model"])
-        backend = self.cfg.get("stt_backend") or "vosk"
-        if os.path.isdir(model) or backend_kind(backend) == "whisper":
-            log.info("Распознавание речи: %s", backend_kind(backend))
-            if backend_kind(backend) == "vosk":
-                log.info("Модель распознавания: %s", model)
-            self.listener = Listener(model, self.on_final, self.on_partial, self.on_listener_error,
-                                     device_name=self.cfg.get("mic_device") or None,
-                                     gain=float(self.cfg.get("mic_gain", 1.0)),
-                                     sensitivity=int(self.cfg.get("mic_sensitivity", 100)),
-                                     backend=backend,
-                                     grammar=self.cfg.get("stt_grammar") or None,
-                                     min_speech_ms=int(self.cfg.get("stt_min_speech_ms", 300)),
-                                     whisper={"model": self.cfg.get("stt_whisper_model", "small"),
-                                              "compute_type": self.cfg.get("stt_whisper_compute", "int8")})
-            self.listener.start()
-        else:
-            log.error("Модель распознавания не найдена: %s", model)
+        if not self._start_listener():
+            log.error("Модель распознавания не найдена: %s", self._model_path())
             self.jobs.put(("say", line("no_model")))
+            self.model_missing.emit()  # main предложит скачать модель
             return
         # вступление: анимация capri + приветствие
         self.jobs.put(("say", line("greet") if self.cfg.get("greet_on_start") else "", "capri"))
         if CONFIG_ERROR:
             self.jobs.put(("say", CONFIG_ERROR))
+        self._start_chatter()
+
+    def _model_path(self):
+        return os.path.join(BASE, self.cfg["vosk_model"])
+
+    def _start_listener(self):
+        """Создать и запустить слушателя. False — нет модели Vosk (Whisper её не требует)."""
+        model = self._model_path()
+        backend = self.cfg.get("stt_backend") or "vosk"
+        if backend_kind(backend) == "vosk":
+            if not os.path.isdir(model):
+                return False
+            log.info("Модель распознавания: %s", model)
+        log.info("Распознавание речи: %s", backend_kind(backend))
+        self.listener = Listener(model, self.on_final, self.on_partial, self.on_listener_error,
+                                 device_name=self.cfg.get("mic_device") or None,
+                                 gain=float(self.cfg.get("mic_gain", 1.0)),
+                                 sensitivity=int(self.cfg.get("mic_sensitivity", 100)),
+                                 backend=backend,
+                                 grammar=self.cfg.get("stt_grammar") or None,
+                                 min_speech_ms=int(self.cfg.get("stt_min_speech_ms", 300)),
+                                 whisper={"model": self.cfg.get("stt_whisper_model", "small"),
+                                          "compute_type": self.cfg.get("stt_whisper_compute", "int8")})
+        self.listener.start()
+        return True
+
+    def _start_chatter(self):
+        if self._chatter_started:  # после установки модели не запускаем второй поток
+            return
+        self._chatter_started = True
         threading.Thread(target=self._chatter_loop, daemon=True).start()  # сам проверяет, включено ли
+
+    def download_model(self):
+        """Первое скачивание модели распознавания речи — по согласию пользователя, в фоне."""
+        threading.Thread(target=self._install_model, daemon=True).start()
+
+    def _install_model(self):
+        self.jobs.put(("say", line("model_downloading")))
+        try:
+            path = model_setup.install_model(BASE, log=log.info)
+        except Exception as e:
+            log.exception("Модель распознавания не установилась")
+            self.jobs.put(("say", line("model_download_failed", e=e)))
+            return
+        log.info("Модель распознавания установлена: %s", path)
+        if not self._start_listener():
+            self.jobs.put(("say", line("no_model")))
+            return
+        self.jobs.put(("say", line("model_ready")))
+        self.jobs.put(("say", line("greet") if self.cfg.get("greet_on_start") else "", "capri"))
+        self._start_chatter()
+
 
     # ----- спонтанные появления -----
     def _chatter_loop(self):
@@ -729,9 +777,22 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     cfg = load_config()
 
-    avatar = Avatar(os.path.join(BASE, "assets"))
+    avatar = Avatar(resource_path("assets"))
     avatar.hide_after = float(cfg["hide_after_seconds"])
     capri = Capri(cfg)
+
+    def ask_model():
+        """Модели нет: объясняем и предлагаем скачать (клик пользователя — согласие на сеть)."""
+        box = QMessageBox(QMessageBox.Icon.Question, "Капри",
+                          "Не найдена модель распознавания речи (около 45 МБ).\n"
+                          "Без неё я не слышу команды. Скачать сейчас?")
+        yes = box.addButton("Скачать", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Позже", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is yes:
+            capri.download_model()
+
+    capri.model_missing.connect(ask_model)
     capri.summon.connect(avatar.summon)
     capri.vanish.connect(avatar.vanish)
     capri.mode.connect(avatar.set_mode)

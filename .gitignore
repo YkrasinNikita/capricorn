@@ -26,3 +26,7 @@ __pycache__/
 *.pyc
 *.tmp
 .pytest_cache/
+
+# сборка PyInstaller
+build/
+dist/

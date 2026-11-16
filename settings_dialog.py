@@ -26,7 +26,7 @@ try:
 except Exception:  # до появления version.py
     VERSION = "dev"
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 PINK, GREEN, DIM = QColor(255, 34, 96), QColor(40, 255, 150), QColor(90, 60, 90)
 RATE_RE = re.compile(r"^[+-]\d{1,3}%$")
 PITCH_RE = re.compile(r"^[+-]\d{1,3}Hz$")
