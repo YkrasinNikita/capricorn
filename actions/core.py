@@ -17,6 +17,7 @@ from .keys import KeysMixin, send_keys
 from .media_cmds import MediaMixin
 from .notes_cmds import NotesMixin
 from .plugins import apply_plugins, load_plugins
+from .rag_cmds import RagMixin
 from .reminders import RemindersMixin
 from .routes import FORGET_RE, FORGET_REPLY_RE, REMEMBER_RE, REPLY_RE, ROUTES
 from .system import SystemMixin
@@ -26,7 +27,7 @@ from .web import (BROWSER_NAMES, BROWSER_SUFFIX, BROWSER_WORDS, WebMixin, cancel
 
 
 class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixin, RemindersMixin,
-              NotesMixin, FallbackMixin):
+              NotesMixin, RagMixin, FallbackMixin):
     def __init__(self, cfg, base_dir, ai, save=None, build_index=True):
         self.cfg = cfg
         self.base_dir = base_dir
@@ -44,6 +45,8 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
         self.local = None
         self.notes = None             # заметки и память (notes.py), подключает main
         self.scheduler = None         # напоминания (scheduler.py), подключает main
+        self.rag = None               # поиск по документам (rag.py), подключает main
+        self.rag_indexing = False
         self.last_intent = None       # имя сработавшего интента — для логов и тестов
         self.routes = ROUTES
         self.plugins = load_plugins(cfg.get("plugins"))  # навыки из actions/plugins
@@ -94,7 +97,7 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
                 return self.run_chain(steps)
             except Exception as e:
                 log.exception("Цепочка %s", steps)
-                return Reply(line("error", e=e))
+                return Reply(line("error", e=e), None, "error")
         return self.handle_one(c)
 
     @staticmethod
@@ -148,7 +151,7 @@ class Actions(MediaMixin, SystemMixin, AppsMixin, WebMixin, FilesMixin, KeysMixi
                     r = fn(c, m)
                 except Exception as e:
                     log.exception("Команда %s (интент %s)", c, name)
-                    return Reply(line("error", e=e))
+                    return Reply(line("error", e=e), None, "error")
                 if r:
                     return r
         plugin = apply_plugins(self.plugins, c)  # новые навыки: actions/plugins/*.py

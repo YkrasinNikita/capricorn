@@ -13,6 +13,7 @@ NO_WINDOW = 0x08000000
 class Reply:
     text: str
     action: str | None = None    # "hide" / "quit"
+    emotion: str = "neutral"     # neutral / joy / error — для аватара (T15)
 
 
 def norm(s):

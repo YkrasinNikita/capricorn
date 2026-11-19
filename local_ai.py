@@ -222,15 +222,20 @@ class LocalAI:
             return self._chat(messages + [{"role": "system", "content": NO_THINKING}], max_tokens, timeout)
         return text
 
-    def ask(self, question, timeout=120, retries=1):
-        """Текст ответа или None, если лучше открыть поиск. timeout — на один запрос к Ollama."""
+    def ask(self, question, timeout=120, retries=1, context=None):
+        """Текст ответа или None, если лучше открыть поиск. timeout — на один запрос к Ollama.
+        context — готовые фрагменты документов для ответа по ним (RAG)."""
         self.last_error = None
-        if FRESH.search(question.lower()):
+        if not context and FRESH.search(question.lower()):
             return None
         now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
         self.history.append({"role": "user", "content": question})
         self.history = self.history[-6:]
-        messages = [{"role": "system", "content": SYSTEM + f"\nСейчас {now}."}] + self.history
+        system = SYSTEM + f"\nСейчас {now}."
+        if context:
+            system += ("\n\nНиже фрагменты документов пользователя. Отвечай по ним, "
+                       "не выдумывай фактов и не упоминай, что это фрагменты.\n\n" + context)
+        messages = [{"role": "system", "content": system}] + self.history
         answer = None
         try:
             for attempt in range(max(0, int(retries)) + 1):

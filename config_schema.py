@@ -31,6 +31,7 @@ RANGES = {
     "followup_seconds": (0, 120),
     "hide_after_seconds": (0, 600),
     "stt_min_speech_ms": (0, 5000),
+    "rag_top_k": (1, 10),
 }
 
 

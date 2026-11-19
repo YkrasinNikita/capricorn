@@ -23,6 +23,7 @@ from logging_setup import setup_logging
 from local_ai import LocalAI
 from notes import Notes
 from persona import line
+from rag import RagIndex
 from scheduler import Scheduler
 from avatar import Avatar
 import model_setup
@@ -64,6 +65,11 @@ DEFAULTS = {
     "browser": "",
     "replies": {},           # свои ответы: {"фраза": "что ответит Капри"} — проверяются раньше команд и нейросети  # в каком браузере открывать сайты: "хром", "яндекс", "опера"… или путь к exe; "" — как в Windows
     "plugins": {},           # навыки из actions/plugins: {"time": false} — отключить конкретный плагин
+    "rag_enabled": True,     # поиск по папке documents и заметкам (локальные эмбеддинги Ollama)
+    "rag_model": "nomic-embed-text",  # модель эмбеддингов: ollama pull nomic-embed-text
+    "rag_top_k": 3,          # сколько фрагментов подмешивать в ответ
+    "rag_documents_dir": "documents",  # .md/.txt, которые индексируются
+    "rag_index_dir": "index",          # сюда пишется rag_index.json
     "anthropic_api_key": "",
     "model": "claude-opus-5-5",
     "wake_words": ["капри", "каприз", "капре", "кепри", "капли"],
@@ -208,6 +214,8 @@ class Capri(QObject):
     roam = Signal()
     hop = Signal()
     move_to = Signal(str)
+    emotion = Signal(str)
+    speech = Signal(float)      # длительность реальной озвучки — для синхронизации рта
 
     def __init__(self, cfg):
         super().__init__()
@@ -225,11 +233,24 @@ class Capri(QObject):
         self.zapret_checked = False  # предлагали ли уже исправить zapret в этом сеансе
         self.actions.local = self.local
         self.speaker = Speaker(cfg)
+        self.speaker.on_speech_start = self.speech.emit  # из потока речи — Qt сам поставит в очередь
         self.jobs = queue.Queue()
         self.scheduler = Scheduler(os.path.join(BASE, "reminders.json"), self._on_reminder)
         self.notes = Notes(os.path.join(BASE, "notes.json"))
         self.actions.scheduler = self.scheduler
         self.actions.notes = self.notes
+        self.rag = None
+        if cfg.get("rag_enabled", True):
+            self.rag = RagIndex(
+                BASE,
+                docs_dir=os.path.join(BASE, cfg.get("rag_documents_dir") or "documents"),
+                index_dir=os.path.join(BASE, cfg.get("rag_index_dir") or "index"),
+                model=cfg.get("rag_model") or "nomic-embed-text",
+                top_k=cfg.get("rag_top_k", 3),
+                notes=self.notes,
+            )
+            self.rag.on_indexed = self._on_rag_indexed
+            self.actions.rag = self.rag
         self.awake_until = 0.0
         self.last_partial_wake = 0.0
         self.speaking = False
@@ -252,6 +273,8 @@ class Capri(QObject):
         self.scheduler.start()  # просроченные озвучатся один раз при старте
         if self.local:
             threading.Thread(target=self.local.start_server, daemon=True).start()
+        if self.rag:
+            threading.Thread(target=self.rag.index_if_needed, daemon=True).start()
         if not self._start_listener():
             log.error("Модель распознавания не найдена: %s", self._model_path())
             self.jobs.put(("say", line("no_model")))
@@ -439,6 +462,10 @@ class Capri(QObject):
     def _on_reminder(self, text):
         """Планировщик сработал — озвучиваем в рабочем потоке, а не в его собственном."""
         self.jobs.put(("say", line("reminder_due", t=text)))
+
+    def _on_rag_indexed(self, count):
+        """Индекс документов перестроен по команде — сообщаем вслух."""
+        self.jobs.put(("say", line("rag_indexed", n=count)))
 
     def _offline_answer(self, cmd):
         """Последняя ступень цепочки ИИ: поиск или честное «не знаю».
@@ -665,7 +692,7 @@ class Capri(QObject):
             reply = self.actions.handle(cmd)
         except Exception as e:
             log.exception("Ошибка выполнения команды: %s", cmd)
-            reply = Reply(line("error", e=e))
+            reply = Reply(line("error", e=e), None, "error")
         if reply is not None and reply.action in ("mic_info", "mic_next"):
             reply = self.mic_command(reply.action)
         if reply is None:
@@ -688,7 +715,10 @@ class Capri(QObject):
             time.sleep(0.8)
             self.roam.emit()
             time.sleep(1.5)
-        if self.say(reply.text):
+        emotion = getattr(reply, "emotion", "neutral") or "neutral"
+        if emotion == "neutral" and reply.action in ("answer", "wave"):
+            emotion = "joy"  # удачный ответ или приветствие — аватар радуется
+        if self.say(reply.text, emotion):
             return  # перебили — уже слушаем новую команду
 
         if reply.action == "quit":
@@ -700,9 +730,10 @@ class Capri(QObject):
             self.awake_until = time.time() + follow
             self.mode.emit("listening", follow)
 
-    def say(self, text):
+    def say(self, text, emotion="neutral"):
         """Озвучивает текст. Возвращает True, если Капри перебили."""
         log.info("Капри: %s", text)
+        self.emotion.emit(emotion or "neutral")
         self.subtitle.emit(text)
         self.mode.emit("speaking", 0.0)
         barge_in = self.cfg.get("barge_in") and self.listener
@@ -802,6 +833,8 @@ def main():
     capri.roam.connect(avatar.start_roam)
     capri.hop.connect(avatar.start_hopping)
     capri.move_to.connect(avatar.move_to_named)
+    capri.emotion.connect(avatar.set_emotion)
+    capri.speech.connect(avatar.set_speech)
     avatar.clicked.connect(capri.call_from_click)
     app.aboutToQuit.connect(capri.shutdown)
 
