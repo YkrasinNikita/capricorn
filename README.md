@@ -358,6 +358,13 @@ python tools/stt_eval.py --backend whisper
 Версия хранится в `version.py` и видна в меню трея → «Настройки…» → «О программе» и в `capri.log`.
 `config.json`, заметки, напоминания и журнал создаются рядом с `Capri.exe` и в сборку не попадают.
 
+### CI и релизы
+
+GitHub Actions проверяет каждый push и pull request: `python -m compileall -q .` и `pytest -q`
+на чистом Windows-раннере (`.github/workflows/ci.yml`). По тегу вида `v1.2.0` собирается
+`Capri-v1.2.0-win64.zip` и прикрепляется к GitHub Release (`.github/workflows/release.yml`).
+Перед тегом обнови `__version__` в `version.py`.
+
 ---
 
 ## Приватность
