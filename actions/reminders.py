@@ -21,7 +21,7 @@ class RemindersMixin:
             item = self.scheduler.add(text or "напоминание", when, repeat)
         except Exception as e:
             return Reply(line("reminder_fail", e=e))
-        return Reply(line("reminder_add", t=item["text"], when=format_when(when)))
+        return Reply(line("reminder_add", t=item["text"], when=format_when(when)), None, "joy")
 
     def reminder_list(self, c, m):
         scheduler = getattr(self, "scheduler", None)

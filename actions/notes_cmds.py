@@ -15,7 +15,8 @@ class NotesMixin:
         if not text:
             return Reply(line("note_need_text"))
         note, duplicate = notes.add(text)
-        return Reply(line("note_exists" if duplicate else "note_saved", t=note["text"]))
+        return Reply(line("note_exists" if duplicate else "note_saved", t=note["text"]), None,
+                     "neutral" if duplicate else "joy")
 
     def note_search(self, c, m):
         notes = getattr(self, "notes", None)
@@ -27,7 +28,7 @@ class NotesMixin:
             return Reply(line("note_not_found", q=query))
         text = "; ".join(note["text"] for note in found)
         more = f" Ещё {total - len(found)}." if total > len(found) else ""
-        return Reply(line("note_found", t=text, more=more))
+        return Reply(line("note_found", t=text, more=more), None, "joy")
 
     def note_list(self, c, m):
         notes = getattr(self, "notes", None)

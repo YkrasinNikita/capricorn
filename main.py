@@ -631,7 +631,7 @@ class Capri(QObject):
             except Exception:
                 log.exception("Ошибка обработки %s", job[0])
                 try:
-                    self.say(line("crash"))
+                    self.say(line("crash"), "error")
                 except Exception:
                     log.exception("Не удалось озвучить сообщение об ошибке")
 

@@ -17,6 +17,25 @@ CYAN = QColor(0, 240, 255)
 WHITE = QColor(255, 255, 255)
 DARK = QColor(10, 6, 18)
 
+# Эмоции аватара: цвет глаза и голосовых полосок (T15). Значения приходят из Reply.emotion.
+EMOTION_COLORS = {
+    "neutral": GREEN,
+    "joy": CYAN,
+    "error": PINK,
+    "thinking": PURPLE,
+}
+_EMOTION_ALIASES = {
+    "нейтрально": "neutral", "neutral": "neutral", "обычно": "neutral", "calm": "neutral",
+    "радость": "joy", "радостно": "joy", "весело": "joy", "joy": "joy", "happy": "joy",
+    "ошибка": "error", "error": "error", "sad": "error", "грусть": "error",
+    "думает": "thinking", "thinking": "thinking",
+}
+
+
+def normalize_emotion(value):
+    """Любое имя эмоции → neutral / joy / error / thinking."""
+    return _EMOTION_ALIASES.get(str(value or "").strip().lower(), "neutral")
+
 W, H = 340, 500        # размер окна
 FIG_H = 380            # высота области фигуры, ниже — HUD с субтитрами
 APPEAR_FRAMES = 30
@@ -122,7 +141,7 @@ def build_procedural(w, h):
     return img, (cx, cy)
 
 
-def draw_eye(p, cx, cy, open_=1.0, pupil=1.0, glow=1.0):
+def draw_eye(p, cx, cy, open_=1.0, pupil=1.0, glow=1.0, color=GREEN):
     r = 46
     almond = QPainterPath()
     almond.moveTo(cx - r * 1.5, cy)
@@ -130,9 +149,9 @@ def draw_eye(p, cx, cy, open_=1.0, pupil=1.0, glow=1.0):
     almond.quadTo(cx, cy + r * 1.25 * open_, cx - r * 1.5, cy)
     p.setBrush(Qt.BrushStyle.NoBrush)
     for i in range(6, 0, -1):
-        p.setPen(QPen(QColor(40, 255, 150, int(min(255, 16 * glow))), i * 5))
+        p.setPen(QPen(QColor(color.red(), color.green(), color.blue(), int(min(255, 16 * glow))), i * 5))
         p.drawPath(almond)
-    p.setPen(QPen(GREEN, 5))
+    p.setPen(QPen(color, 5))
     p.setBrush(QColor(6, 24, 20))
     p.drawPath(almond)
     if open_ < 0.15:
@@ -140,7 +159,7 @@ def draw_eye(p, cx, cy, open_=1.0, pupil=1.0, glow=1.0):
     p.save()
     p.setClipPath(almond)
     c = QPointF(cx, cy)
-    p.setPen(QPen(GREEN, 4))
+    p.setPen(QPen(color, 4))
     p.setBrush(QColor(20, 40, 90))
     p.drawEllipse(c, r * .62 * pupil, r * .62 * pupil)
     p.setPen(QPen(QColor(120, 200, 255), 2))
@@ -474,6 +493,10 @@ class Avatar(QWidget):
         self.state = "hidden"       # hidden / appearing / visible / vanishing
         self.mode = "idle"           # idle / listening / thinking / speaking
         self.mode_until = 0.0
+        self.emotion = "neutral"     # neutral / joy / error / thinking (T15)
+        self.speech_start = 0.0      # когда началась настоящая озвучка
+        self.speech_end = 0.0        # когда она закончится (по длительности аудио)
+        self.mouth_level = 0.0       # 0..1 — амплитуда «рта»
         self.hide_at = 0.0
         self.hide_after = 12.0
         self.subtitle = ""
@@ -645,10 +668,26 @@ class Avatar(QWidget):
             self.anim = None
         if mode != "speaking":
             self.hopping = False
+            self.speech_end = 0.0
+            self.mouth_level = 0.0
+        elif self.speech_end < time.time():
+            # точную длительность пришлёт Speaker, а пока оцениваем по тексту субтитра
+            self.speech_end = time.time() + max(1.0, len(self.subtitle) / 14)
         self.mode = mode
         self.mode_until = time.time() + seconds if seconds > 0 else 0
         self.hide_at = time.time() + self.hide_after if mode == "idle" else 0
         self.burst, self.burst_level = random.randint(3, 6), random.uniform(.4, .9)
+
+    def set_emotion(self, name):
+        """Сменить эмоцию (цвет глаза и голосовых полосок). Анимацию не перезапускает."""
+        self.emotion = normalize_emotion(name)
+
+    def set_speech(self, seconds):
+        """Настоящая длительность озвучки из voice.Speaker: по ней двигается «рот»."""
+        seconds = float(seconds or 0)
+        self.speech_start = time.time()
+        self.speech_end = self.speech_start + max(0.4, seconds)
+        self.mouth_level = 0.0
 
     def set_subtitle(self, text):
         self.subtitle = text or ""
@@ -676,6 +715,12 @@ class Avatar(QWidget):
             return
         if self.mode_until and now > self.mode_until:
             self.set_mode("idle")
+        if self.mode == "speaking" and now < self.speech_end:
+            # дешёвая псевдослучайная амплитуда: несколько синусов, без расчётов на кадр
+            target = 0.25 + 0.75 * abs(math.sin(now * 13.0) * math.sin(now * 5.7 + 1.3))
+            self.mouth_level += (target - self.mouth_level) * 0.35
+        elif self.mouth_level > 0.01:
+            self.mouth_level *= 0.65
         if self.roaming:
             self._roam_step(now)
         elif self._tele_step(now):
@@ -697,6 +742,22 @@ class Avatar(QWidget):
             self.lag = random.randint(2, 6)
         self.render()
         self.update()
+
+    def _emotion_color(self):
+        return EMOTION_COLORS.get(self.emotion, GREEN)
+
+    def _voice_bars(self, p):
+        """«Рот»-эквалайзер: короткие полоски у подбородка, двигаются по длительности аудио.
+        Рисуются только во время речи, поэтому на холостой CPU не влияют."""
+        if self.mode != "speaking" or self.mouth_level <= 0.02:
+            return
+        color = self._emotion_color()
+        base_y = FIG_H - 26
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(7):
+            height = 4 + 26 * self.mouth_level * (0.4 + 0.6 * abs(math.sin(self.t * 0.55 + i * 0.9)))
+            p.setBrush(QColor(color.red(), color.green(), color.blue(), 170))
+            p.drawRoundedRect(QRectF(W / 2 - 36 + i * 11, base_y - height, 6, height), 3, 3)
 
     def _figure(self):
         if self.anim:
@@ -727,7 +788,13 @@ class Avatar(QWidget):
         elif self.mode == "speaking":
             pupil = 0.8 + 0.35 * random.random()
             glow = 1.3 + random.random()
-        draw_eye(p, cx, cy, open_, pupil, glow)
+        if self.emotion == "error":
+            pupil *= 0.8
+            glow *= 0.85
+        elif self.emotion == "joy":
+            pupil = min(1.25, pupil + 0.05)
+            glow *= 1.25
+        draw_eye(p, cx, cy, open_, pupil, glow, self._emotion_color())
 
         if self.mode == "thinking":
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -848,6 +915,7 @@ class Avatar(QWidget):
         p.drawLine(0, roll, W, roll)
         p.setCompositionMode(CM.CompositionMode_SourceOver)
 
+        self._voice_bars(p)
         p.resetTransform()
         self._hud(p, glitch)
         p.end()
@@ -872,7 +940,7 @@ class Avatar(QWidget):
         font.setBold(True)
         p.setFont(font)
         status = "// CAPRI :: " + STATUS_TEXT.get(self.mode, "")
-        p.setPen(GREEN)
+        p.setPen(self._emotion_color())
         p.drawText(16, top + 20, status)
 
         # «эквалайзер»

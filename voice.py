@@ -354,6 +354,33 @@ def _mci(cmd):
     return err, buf.value
 
 
+def estimate_speech_seconds(text):
+    """Примерная длительность озвучки по числу слов (если файл ещё не готов)."""
+    words = len(re.findall(r"\w+", clean_for_speech(text)))
+    return max(0.6, words / 2.6)  # примерно 155 слов в минуту с учётом пауз
+
+
+def audio_duration(path):
+    """Длительность wav/mp3 в секундах или 0, если узнать не удалось."""
+    try:
+        if str(path).lower().endswith(".wav"):
+            import wave
+            with wave.open(os.fspath(path), "rb") as w:
+                rate = w.getframerate() or 0
+                return w.getnframes() / float(rate) if rate else 0.0
+        _mci("close capri_dur")
+        if _mci(f'open "{path}" type mpegvideo alias capri_dur')[0] != 0:
+            return 0.0
+        try:
+            _mci("set capri_dur time format milliseconds")
+            err, value = _mci("status capri_dur length")
+            return max(0.0, float(value) / 1000) if not err and value.isdigit() else 0.0
+        finally:
+            _mci("close capri_dur")
+    except Exception:
+        return 0.0
+
+
 def play_mp3(path, stop_event, volume=100):
     """Играет mp3/wav, пока не закончится или не взведён stop_event. True — если прервали.
     volume 0..100 — громкость Капри (не трогает общую громкость Windows)."""
@@ -558,6 +585,8 @@ class Speaker:
         self.cache_enabled = bool(cfg.get("tts_cache", True))
         self.cache_dir = os.fspath(cache_dir or CACHE_DIR)
         self.cache_limit = int(cache_limit or CACHE_LIMIT)
+        self.on_speech_start = None   # callback(секунды) — main синхронизирует рот аватара
+        self.last_duration = 0.0
         # прогреваем модель заранее, чтобы первая фраза не тормозила; в приватном режиме
         # не скачиваем её из сети — только уже установленную
         if self.engine == "silero" and (not self.privacy or os.path.exists(SILERO_PATH)):
@@ -580,6 +609,7 @@ class Speaker:
         """Блокирует поток до конца фразы. Возвращает True, если речь перебили."""
         self.stop_event.clear()
         text = clean_for_speech(text)
+        self.last_duration = estimate_speech_seconds(text)
         if not text:
             return False
         if self.privacy:  # приватный режим: никакого edge-tts и облака
@@ -721,6 +751,16 @@ class Speaker:
             log.exception("Не удалось сохранить озвучку в кэш")
             return path, False
 
+    def _notify_speech(self, path, text):
+        """Сообщить настоящую длительность озвучки: аватар синхронизирует движение рта."""
+        duration = audio_duration(path) if path else 0.0
+        self.last_duration = duration or estimate_speech_seconds(text)
+        if self.on_speech_start:
+            try:
+                self.on_speech_start(self.last_duration)
+            except Exception:
+                log.exception("Не удалось сообщить длительность озвучки")
+
     def _edge(self, text):
         if self.privacy:  # страховка: в приватном режиме в сеть не ходим
             return self._private(text)
@@ -728,6 +768,7 @@ class Speaker:
         if self.stop_event.is_set():
             return True
         try:
+            self._notify_speech(path, text)
             return play_mp3(path, self.stop_event, self.volume)
         except Exception:
             if not from_cache:  # не кэш — значит, дело не в повреждённом файле
@@ -735,6 +776,7 @@ class Speaker:
             log.info("Файл из кэша не открылся, синтезирую заново")
             self._drop_cache(text)
             path, _ = self._render_cached(text, force=True)
+            self._notify_speech(path, text)
             return play_mp3(path, self.stop_event, self.volume)
 
     def _private(self, text):
@@ -742,6 +784,7 @@ class Speaker:
         if self.engine == "silero" and os.path.exists(SILERO_PATH):
             try:
                 self.render_silero(text, self.fx_path)
+                self._notify_speech(self.fx_path, text)
                 return play_mp3(self.fx_path, self.stop_event, self.volume)
             except Exception:
                 log.exception("Silero не сработал в приватном режиме, говорю голосом Windows")
@@ -757,6 +800,7 @@ class Speaker:
                 sp.Voice = voices.Item(i)
                 break
         sp.Volume = max(0, min(100, self.volume))
+        self._notify_speech(None, text)
         sp.Speak(text, 1)  # SVSFlagsAsync
         while not sp.WaitUntilDone(50):
             if self.stop_event.is_set():
