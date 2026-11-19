@@ -28,7 +28,7 @@ def main():
         return 0
     print("Документы:", ", ".join(source for source, _ in rag.documents()) or "папка documents пуста")
     count = rag.build()
-    print(f"Готово: {count} фрагментов → {rag.index_path}")
+    print(f"Готово: {count} фрагментов -> {rag.index_path}")
     return 0
 
 

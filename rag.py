@@ -397,7 +397,9 @@ class RagIndex:
 
 def _extractive(text, limit=320):
     """Короткий ответ-цитата без модели: целые предложения, не длиннее limit."""
-    text = re.sub(r"\s+", " ", text or "").strip()
+    text = re.sub(r"https?://\S+", "", text or "")
+    text = re.sub(r"[*#`>|\[\]]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:
         return text
     cut = text[:limit]
