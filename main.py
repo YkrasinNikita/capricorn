@@ -142,7 +142,7 @@ def _edit_config(change):
         log.exception("config.json с ошибкой, не записываю")
         return "в config.json ошибка. Исправь её или удали файл, он создастся заново."
     change(data)
-    data.setdefault("config_version", CONFIG_VERSION)  # файл всегда соответствует текущей схеме
+    data["config_version"] = CONFIG_VERSION  # файл всегда соответствует текущей схеме
     save_config_file(CONFIG_PATH, data)
     return None
 

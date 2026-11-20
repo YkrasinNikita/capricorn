@@ -15,7 +15,7 @@ import shutil
 
 log = logging.getLogger("capri")
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 
 # допустимые диапазоны числовых настроек: key -> (min, max)
 RANGES = {

@@ -95,6 +95,19 @@ def test_load_valid_config_is_not_rewritten(config_path):
     assert config_path.read_text(encoding="utf-8") == original
 
 
+def test_upgrade_from_v1_adds_new_keys_and_saves(config_path):
+    """Новые настройки (T5–T9, T14) появляются в старом config.json после миграции."""
+    old = {"config_version": 1, "voice_volume": 55}
+    config_path.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+    cfg, error = load_config_file(config_path, DEFAULTS)
+    assert error == ""
+    assert cfg["voice_volume"] == 55
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["config_version"] == CONFIG_VERSION
+    assert saved["privacy_mode"] is False
+    assert saved["local_model"] == DEFAULTS["local_model"]
+
+
 def test_broken_json_does_not_crash_and_makes_backup(config_path):
     broken = '{"voice_volume": 70, "sites": {'
     config_path.write_text(broken, encoding="utf-8")
